@@ -101,75 +101,71 @@ fn bench_verify(c: &mut Criterion) {
 
 // Benchmark: Batch Verification (2^2 to 2^12)
 fn bench_batch_verify(c: &mut Criterion) {
-    let mut group = c.benchmark_group("dalek_batch_verify");
-
+    // Benchmark both implementations side-by-side for each size
     for i in 2..=12 {
+        // Firedancer batch verify is limited to 255 signatures (2^8)
         let size = 1 << i;
 
-        // Generate test data
-        let mut messages = Vec::new();
-        let mut signatures = Vec::new();
-        let mut public_keys = Vec::new();
+        // Dalek: Individual verification of multiple signatures (different messages)
+        {
+            let mut group = c.benchmark_group("batch_verify");
 
-        for _ in 0..size {
-            let (signing_key, verifying_key) = generate_keypair();
-            let message = format!("Message {}", rand::random::<u64>());
-            let signature = signing_key.sign(message.as_bytes());
+            // Generate test data for Dalek
+            let mut messages = Vec::new();
+            let mut signatures = Vec::new();
+            let mut public_keys = Vec::new();
 
-            messages.push(message.into_bytes());
-            signatures.push(signature);
-            public_keys.push(verifying_key);
+            for _ in 0..size {
+                let (signing_key, verifying_key) = generate_keypair();
+                let message = format!("Message {}", rand::random::<u64>());
+                let signature = signing_key.sign(message.as_bytes());
+
+                messages.push(message.into_bytes());
+                signatures.push(signature);
+                public_keys.push(verifying_key);
+            }
+
+            group.bench_with_input(BenchmarkId::new("dalek", size), &size, |b, _| {
+                b.iter(|| {
+                    // Note: ed25519-dalek v2 doesn't have built-in batch verification
+                    // We'll verify each signature individually
+                    for i in 0..size {
+                        let _ = public_keys[i]
+                            .verify(black_box(&messages[i]), black_box(&signatures[i]));
+                    }
+                })
+            });
+
+            // Firedancer: Batch verification over the same message
+            let message = b"Batch verification test message";
+            let mut fd_signatures = Vec::new();
+            let mut fd_public_keys = Vec::new();
+
+            for _ in 0..size {
+                let mut csprng = OsRng;
+                let mut private_key = [0u8; 32];
+                csprng.fill_bytes(&mut private_key);
+                let public_key = firedancer_ffi::public_from_private(&private_key).unwrap();
+                let signature = firedancer_ffi::sign(message, &public_key, &private_key).unwrap();
+
+                fd_signatures.push(signature);
+                fd_public_keys.push(public_key);
+            }
+
+            group.bench_with_input(BenchmarkId::new("firedancer", size), &size, |b, _| {
+                b.iter(|| {
+                    let result = firedancer_ffi::verify_batch_single_msg(
+                        black_box(message),
+                        black_box(&fd_signatures),
+                        black_box(&fd_public_keys),
+                    );
+                    black_box(result)
+                })
+            });
+
+            group.finish();
         }
-
-        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
-            b.iter(|| {
-                // Note: ed25519-dalek v2 doesn't have built-in batch verification
-                // We'll verify each signature individually for now
-                for i in 0..size {
-                    let _ =
-                        public_keys[i].verify(black_box(&messages[i]), black_box(&signatures[i]));
-                }
-            })
-        });
     }
-
-    group.finish();
-
-    let mut group = c.benchmark_group("firedancer_batch_verify");
-
-    for i in 2..=8 {
-        // Firedancer batch verify is limited to 255 signatures
-        let size = 1 << i;
-
-        // Generate test data - all signatures over the same message
-        let message = b"Batch verification test message";
-        let mut fd_signatures = Vec::new();
-        let mut fd_public_keys = Vec::new();
-
-        for _ in 0..size {
-            let mut csprng = OsRng;
-            let mut private_key = [0u8; 32];
-            csprng.fill_bytes(&mut private_key);
-            let public_key = firedancer_ffi::public_from_private(&private_key).unwrap();
-            let signature = firedancer_ffi::sign(message, &public_key, &private_key).unwrap();
-
-            fd_signatures.push(signature);
-            fd_public_keys.push(public_key);
-        }
-
-        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
-            b.iter(|| {
-                let result = firedancer_ffi::verify_batch_single_msg(
-                    black_box(message),
-                    black_box(&fd_signatures),
-                    black_box(&fd_public_keys),
-                );
-                black_box(result)
-            })
-        });
-    }
-
-    group.finish();
 }
 
 // Benchmark: Single Group Multiplication
