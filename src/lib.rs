@@ -7,6 +7,7 @@ pub mod firedancer_ffi;
 
 pub use curve25519_dalek;
 pub use ed25519_dalek;
+pub use ed25519_zebra;
 
 #[cfg(test)]
 mod tests {

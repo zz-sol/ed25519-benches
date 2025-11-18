@@ -2,6 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use curve25519_dalek::{traits::MultiscalarMul, EdwardsPoint, Scalar};
 use ed25519_benches::firedancer_ffi;
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_zebra::{SigningKey as ZebraSigningKey, VerificationKey as ZebraVerificationKey};
 use rand::rngs::OsRng;
 use rand::RngCore;
 
@@ -43,6 +44,17 @@ fn bench_keygen(c: &mut Criterion) {
             black_box(public_key)
         })
     });
+
+    c.bench_function("zebra_keygen", |b| {
+        b.iter(|| {
+            let mut csprng = OsRng;
+            let mut secret_bytes = [0u8; 32];
+            csprng.fill_bytes(&mut secret_bytes);
+            let signing_key = ZebraSigningKey::from(secret_bytes);
+            let verification_key = ZebraVerificationKey::from(&signing_key);
+            black_box(verification_key)
+        })
+    });
 }
 
 // Benchmark: Signing
@@ -66,6 +78,18 @@ fn bench_sign(c: &mut Criterion) {
         b.iter(|| {
             let signature =
                 firedancer_ffi::sign(black_box(message), &public_key, &private_key).unwrap();
+            black_box(signature)
+        })
+    });
+
+    let mut csprng = OsRng;
+    let mut zebra_secret_bytes = [0u8; 32];
+    csprng.fill_bytes(&mut zebra_secret_bytes);
+    let zebra_signing_key = ZebraSigningKey::from(zebra_secret_bytes);
+
+    c.bench_function("zebra_sign", |b| {
+        b.iter(|| {
+            let signature = zebra_signing_key.sign(black_box(message));
             black_box(signature)
         })
     });
@@ -94,6 +118,20 @@ fn bench_verify(c: &mut Criterion) {
         b.iter(|| {
             let result =
                 firedancer_ffi::verify(black_box(message), black_box(&fd_signature), &public_key);
+            black_box(result)
+        })
+    });
+
+    let mut csprng = OsRng;
+    let mut zebra_secret_bytes = [0u8; 32];
+    csprng.fill_bytes(&mut zebra_secret_bytes);
+    let zebra_signing_key = ZebraSigningKey::from(zebra_secret_bytes);
+    let zebra_verification_key = ZebraVerificationKey::from(&zebra_signing_key);
+    let zebra_signature = zebra_signing_key.sign(message);
+
+    c.bench_function("zebra_verify", |b| {
+        b.iter(|| {
+            let result = zebra_verification_key.verify(black_box(&zebra_signature), black_box(message));
             black_box(result)
         })
     });
@@ -159,6 +197,30 @@ fn bench_batch_verify(c: &mut Criterion) {
                         black_box(&fd_signatures),
                         black_box(&fd_public_keys),
                     );
+                    black_box(result)
+                })
+            });
+
+            // Zebra: Batch verification
+            let mut zebra_items = Vec::new();
+            for _ in 0..size {
+                let mut csprng = OsRng;
+                let mut secret_bytes = [0u8; 32];
+                csprng.fill_bytes(&mut secret_bytes);
+                let signing_key = ZebraSigningKey::from(secret_bytes);
+                let vk_bytes = ed25519_zebra::VerificationKeyBytes::from(&signing_key);
+                let signature = signing_key.sign(message);
+
+                zebra_items.push((vk_bytes, signature, message));
+            }
+
+            group.bench_with_input(BenchmarkId::new("zebra", size), &size, |b, _| {
+                b.iter(|| {
+                    let mut batch = ed25519_zebra::batch::Verifier::new();
+                    for (vk, sig, msg) in &zebra_items {
+                        batch.queue((black_box(*vk), black_box(*sig), black_box(msg)));
+                    }
+                    let result = batch.verify(OsRng);
                     black_box(result)
                 })
             });
